@@ -4,10 +4,12 @@ import os
 import subprocess
 import threading
 import tkinter as tk
+import json
 
 from dataclasses import dataclass
 from tkinter import messagebox, ttk
 from typing import Any, cast
+from pathlib import Path
 
 from utils.capture import CropRect
 from utils.workflow import JobParams, run_once
@@ -51,11 +53,23 @@ class App(tk.Tk):
 
         self.status_var = tk.StringVar(value = "Idle")
 
+        app_dir = Path(os.getenv("APPDATA", ".")) / "SessionScreenshotDiscord"
+        app_dir.mkdir(parents = True, exist_ok = True)
+        self._webhooks_path = app_dir / "webhooks.json"
+
+
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._webhooks: dict[str, str] = {}
+
+        self.channel_name_var = tk.StringVar(value = "")
+        self.channel_select_var = tk.StringVar(value = "")
+
+        self._load_webhooks()
 
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
 
     def _get_webhook_value(self) -> str:
         v = (self.webhook_var.get() or "").strip()
@@ -122,6 +136,94 @@ class App(tk.Tk):
         self.webhook_var.set(v)
         self.status_var.set("Loaded webhook from DISCORD_WEBHOOK_URL.")
 
+    def _load_webhooks(self) -> None:
+        try:
+            if self._webhooks_path.exists():
+                data = json.loads(self._webhooks_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict) and isinstance(data.get("channels"), dict):
+                    # Ensure all values are strings
+                    self._webhooks = {
+                        str(k): str(v) for k, v in data["channels"].items()
+                        if isinstance(k, str) and isinstance(v, str)
+                    }
+                else:
+                    self._webhooks = {}
+            else:
+                self._webhooks = {}
+        except Exception:
+            self._webhooks = {}
+
+    def _save_webhooks(self) -> None:
+        payload = {"channels": self._webhooks}
+        self._webhooks_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    def _refresh_channel_dropdown(self) -> None:
+        if not hasattr(self, "channel_combo"):
+            return
+        names = sorted(self._webhooks.keys())
+        self.channel_combo["values"] = names
+
+        cur = (self.channel_select_var.get() or "").strip()
+        if cur and cur not in self._webhooks:
+            self.channel_select_var.set("")
+
+    def on_select_channel(self, _event: object = None) -> None:
+        name = (self.channel_select_var.get() or "").strip()
+        if not name:
+            return
+        url = self._webhooks.get(name, "").strip()
+        if url:
+            self.webhook_var.set(url)
+            self.status_var.set(f"Selected channel: {name}")
+
+    def on_save_channel(self) -> None:
+        name = (self.channel_name_var.get() or "").strip()
+        if not name:
+            messagebox.showerror("Invalid input", "Enter a channel name to save (e.g. screenshots).")
+            return
+
+        try:
+            url = self._get_webhook_value()
+        except Exception as e:
+            messagebox.showerror("Invalid input", str(e))
+            return
+
+        self._webhooks[name] = url
+        try:
+            self._save_webhooks()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed saving webhooks.json\n{e}")
+            return
+
+        self.channel_select_var.set(name)
+        self._refresh_channel_dropdown()
+        self.status_var.set(f"Saved channel: {name}")
+
+    def on_delete_channel(self) -> None:
+        name = (self.channel_select_var.get() or "").strip()
+        if not name:
+            messagebox.showerror("Invalid input", "Select a channel to delete.")
+            return
+
+        if name not in self._webhooks:
+            messagebox.showinfo("Not found", "Selected channel name not found.")
+            return
+
+        ok = messagebox.askyesno("Confirm delete", f'Delete saved channel "{name}"?')
+        if not ok:
+            return
+
+        del self._webhooks[name]
+        try:
+            self._save_webhooks()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed saving webhooks.json\n{e}")
+            return
+
+        self.channel_select_var.set("")
+        self._refresh_channel_dropdown()
+        self.status_var.set(f"Deleted channel: {name}")
+
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
         frm = ttk.Frame(self)
@@ -129,8 +231,39 @@ class App(tk.Tk):
 
         r = 0
 
+        channel_row = ttk.Frame(frm)
+        channel_row.grid(row = r + 1, column = 1, sticky = "w", pady = (4, 0))
+
+        ttk.Label(channel_row, text = "Channel:").grid(row = 0, column = 0, sticky = "w")
+
+        self.channel_combo = ttk.Combobox(
+            channel_row,
+            textvariable = self.channel_select_var,
+            state = "readonly",
+            width = 24,
+        )
+        self.channel_combo.grid(row = 0, column = 1, sticky = "w", padx = (6, 8))
+        self.channel_combo.bind("<<ComboboxSelected>>", self.on_select_channel)
+
+        ttk.Button(channel_row, text = "Delete", command = self.on_delete_channel).grid(
+            row = 0, column = 2, sticky = "w", padx = (0, 8)
+        )
+
+        ttk.Label(channel_row, text = "Save as:").grid(row = 0, column = 3, sticky = "w")
+        ttk.Entry(channel_row, textvariable = self.channel_name_var, width = 18).grid(
+            row = 0, column = 4, sticky = "w", padx = (6, 8)
+        )
+        ttk.Button(channel_row, text = "Save/Update", command = self.on_save_channel).grid(
+            row = 0, column = 5, sticky = "w"
+        )
+
+        self._refresh_channel_dropdown()
+
+        r += 2
+
         ttk.Label(frm, text = "Discord Webhook URL:").grid(row = r, column = 0, sticky = "w")
         ttk.Entry(frm, textvariable = self.webhook_var, width = 64).grid(row = r, column = 1, sticky = "w")
+
 
         btn_row = ttk.Frame(frm)
         btn_row.grid(row = r + 1, column = 1, sticky = "w", pady = (4, 0))
@@ -181,7 +314,7 @@ class App(tk.Tk):
         ttk.Separator(frm).grid(row = r, column = 0, columnspan = 2, sticky = "ew", pady = 8)
         r += 1
 
-        ttk.Label(frm, text = "Loop interval (seconds):").grid(row = r, column = 0, sticky = "w")
+        ttk.Label(frm, text = "Loop interval (minutes):").grid(row = r, column = 0, sticky = "w")
         ttk.Entry(frm, textvariable = self.interval_var, width = 10).grid(row = r, column = 1, sticky = "w")
         r += 1
 
@@ -290,12 +423,13 @@ class App(tk.Tk):
 
         try:
             params = self._read_params()
-            interval_s = float(self.interval_var.get().strip())
+            interval_m = float(self.interval_var.get().strip())
+            interval_s = interval_m * 60.0
         except Exception as e:
             messagebox.showerror("Invalid input", str(e))
             return
 
-        if interval_s <= 0:
+        if interval_m <= 0:
             messagebox.showerror("Invalid input", "Interval must be > 0 to start loop.")
             return
 
