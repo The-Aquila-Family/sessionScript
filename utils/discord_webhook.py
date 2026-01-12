@@ -2,6 +2,16 @@ from __future__ import annotations
 
 import requests
 
+def probe_webhook(webhook_url: str, timeout_s: int = 10) -> None:
+    webhook_url = (webhook_url or "").strip()
+    if not webhook_url:
+        raise ValueError("webhook_url is required")
+
+    resp = requests.get(webhook_url, timeout = timeout_s)
+    if resp.status_code >= 300:
+        raise RuntimeError(f"Webhook probe failed: {resp.status_code} {resp.text[:300]}")
+
+
 def discordwebhook(webhook_url: str, image_bytes: bytes, filename: str = "crop.png", content: str = "", timeout_s: int = 20,) -> None:
     webhook_url = (webhook_url or "").strip()
     if not webhook_url:

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import threading
 import tkinter as tk
 
@@ -32,7 +34,9 @@ class App(tk.Tk):
 
         d = defaults or UiDefaults()
 
-        self.webhook_var = tk.StringVar(value = "")
+        env_webhook = (os.getenv("DISCORD_WEBHOOK_URL") or "").strip()
+        self.webhook_var = tk.StringVar(value = env_webhook if env_webhook else "")
+
         self.message_var = tk.StringVar(value = d.message)
         self.key_var = tk.StringVar(value = d.key)
 
@@ -53,6 +57,71 @@ class App(tk.Tk):
         self._build_ui()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    def _get_webhook_value(self) -> str:
+        v = (self.webhook_var.get() or "").strip()
+        if not v:
+            raise ValueError("Webhook URL is required.")
+        return v
+
+    def _ps_escape_for_double_quotes(self, s: str) -> str:
+        return s.replace('"', '`"')
+
+    def on_set_env_current_app(self) -> None:
+        try:
+            url = self._get_webhook_value()
+        except Exception as e:
+            messagebox.showerror("Invalid input", str(e))
+            return
+
+        os.environ["DISCORD_WEBHOOK_URL"] = url
+        self.status_var.set("Set DISCORD_WEBHOOK_URL for this app session.")
+
+    def on_persist_env_setx(self) -> None:
+        if os.name != "nt":
+            messagebox.showerror("Not supported", "setx is Windows-only.")
+            return
+
+        try:
+            url = self._get_webhook_value()
+        except Exception as e:
+            messagebox.showerror("Invalid input", str(e))
+            return
+
+        url_escaped = self._ps_escape_for_double_quotes(url)
+        cmd = f'setx DISCORD_WEBHOOK_URL "{url_escaped}"'
+
+        try:
+            res = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", cmd],
+                capture_output = True,
+                text = True,
+            )
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to run PowerShell.\n{e}")
+            return
+
+        if res.returncode != 0:
+            msg = (res.stderr or res.stdout or "").strip()
+            messagebox.showerror("setx failed", msg if msg else f"Return code: {res.returncode}")
+            return
+
+        os.environ["DISCORD_WEBHOOK_URL"] = url
+        self.status_var.set("Persisted DISCORD_WEBHOOK_URL using setx. New terminals will see it.")
+        messagebox.showinfo(
+            "Done",
+            "Saved DISCORD_WEBHOOK_URL using setx.\n"
+            "Open a new terminal/session for it to appear there.\n"
+            "This app will use it immediately.",
+        )
+
+    def on_load_webhook_from_env(self) -> None:
+        v = (os.getenv("DISCORD_WEBHOOK_URL") or "").strip()
+        if not v:
+            messagebox.showinfo("Not found", "DISCORD_WEBHOOK_URL is not set.")
+            return
+        self.webhook_var.set(v)
+        self.status_var.set("Loaded webhook from DISCORD_WEBHOOK_URL.")
+
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
         frm = ttk.Frame(self)
@@ -62,7 +131,21 @@ class App(tk.Tk):
 
         ttk.Label(frm, text = "Discord Webhook URL:").grid(row = r, column = 0, sticky = "w")
         ttk.Entry(frm, textvariable = self.webhook_var, width = 64).grid(row = r, column = 1, sticky = "w")
-        r += 1
+
+        btn_row = ttk.Frame(frm)
+        btn_row.grid(row = r + 1, column = 1, sticky = "w", pady = (4, 0))
+
+        ttk.Button(btn_row, text = "Set for this app", command = self.on_set_env_current_app).grid(
+            row = 0, column = 0, padx = (0, 8)
+        )
+        ttk.Button(btn_row, text = "Persist (setx)", command = self.on_persist_env_setx).grid(
+            row = 0, column = 1, padx = (0, 8)
+        )
+        ttk.Button(btn_row, text = "Load from env", command = self.on_load_webhook_from_env).grid(
+            row = 0, column = 2
+        )
+
+        r += 2
 
         ttk.Label(frm, text = "Key to press:").grid(row = r, column = 0, sticky = "w")
         ttk.Entry(frm, textvariable = self.key_var, width = 10).grid(row = r, column = 1, sticky = "w")
