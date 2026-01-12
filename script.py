@@ -1,10 +1,9 @@
-import os
-import time
-import argparse
-from io import BytesIO
+from utils.ui import App
 
-import pyautogui
-import requests
-import mss
-from PIL import Image
+def main() -> None:
+    app = App()
+    app.mainloop()
 
+
+if __name__ == "__main__":
+    main()
