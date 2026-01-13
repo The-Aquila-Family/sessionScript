@@ -13,6 +13,7 @@ from pathlib import Path
 
 from utils.capture import CropRect
 from utils.workflow import JobParams, run_once
+from utils.idle_keypress import IdleKeyPresser, IdleKeypressConfig
 
 
 @dataclass(frozen=True)
@@ -52,6 +53,14 @@ class App(tk.Tk):
         self.monitor_var = tk.StringVar(value = d.monitor_index)
 
         self.status_var = tk.StringVar(value = "Idle")
+
+        self.idle_enabled_var = tk.BooleanVar(value = False)
+        self.idle_keys_var = tk.StringVar(value = "wasd")
+        self.idle_min_var = tk.StringVar(value = "1")
+        self.idle_max_var = tk.StringVar(value = "60")
+
+        self._capture_in_progress = threading.Event()
+        self._idle_presser: IdleKeyPresser | None = None
 
         app_dir = Path(os.getenv("APPDATA", ".")) / "SessionScreenshotDiscord"
         app_dir.mkdir(parents = True, exist_ok = True)
@@ -223,6 +232,36 @@ class App(tk.Tk):
         self.channel_select_var.set("")
         self._refresh_channel_dropdown()
         self.status_var.set(f"Deleted channel: {name}")
+    
+    def _start_idle_presser_if_enabled(self) -> None:
+        if not self.idle_enabled_var.get():
+            self._idle_presser = None
+            return
+
+        keys = (self.idle_keys_var.get() or "").strip()
+        if not keys:
+            raise ValueError("Idle keys cannot be empty if idle presser is enabled.")
+
+        try:
+            min_s = int(float(self.idle_min_var.get().strip()))
+            max_s = int(float(self.idle_max_var.get().strip()))
+        except Exception as e:
+            raise ValueError("Idle min/max must be numbers (seconds).") from e
+
+        if min_s < 1:
+            min_s = 1
+        if max_s < min_s:
+            max_s = min_s
+
+        cfg = IdleKeypressConfig(keys = keys, min_seconds = min_s, max_seconds = max_s)
+        self._idle_presser = IdleKeyPresser(cfg, self._capture_in_progress)
+        self._idle_presser.start()
+
+    def _stop_idle_presser(self) -> None:
+        if self._idle_presser:
+            self._idle_presser.stop()
+            self._idle_presser = None
+
 
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
@@ -322,6 +361,33 @@ class App(tk.Tk):
         ttk.Entry(frm, textvariable = self.message_var, width = 64).grid(row = r, column = 1, sticky = "w")
         r += 1
 
+        ttk.Label(frm, text="Idle key presser:").grid(row = r, column = 0, sticky = "w")
+
+        idle_row1 = ttk.Frame(frm)
+        idle_row1.grid(row = r, column = 1, sticky = "w")
+
+        ttk.Checkbutton(
+            idle_row1,
+            text = "Enable random keypress between captures",
+            variable = self.idle_enabled_var,
+        ).grid(row = 0, column = 0, sticky = "w")
+
+        r += 1
+
+        idle_row2 = ttk.Frame(frm)
+        idle_row2.grid(row = r, column = 1, sticky = "w")
+
+        ttk.Label(idle_row2, text = "Keys:").grid(row = 0, column = 0, sticky = "w")
+        ttk.Entry(idle_row2, textvariable = self.idle_keys_var, width = 12).grid(row = 0, column = 1, padx = (6, 12))
+
+        ttk.Label(idle_row2, text = "Min sec:").grid(row = 0, column = 2, sticky = "w")
+        ttk.Entry(idle_row2, textvariable = self.idle_min_var, width = 6).grid(row = 0, column = 3, padx = (6, 12))
+
+        ttk.Label(idle_row2, text = "Max sec:").grid(row = 0, column = 4, sticky = "w")
+        ttk.Entry(idle_row2, textvariable = self.idle_max_var, width = 6).grid(row = 0, column = 5, padx = (6, 0))
+
+        r += 1
+
         btns = ttk.Frame(frm)
         btns.grid(row = r, column = 0, columnspan = 2, sticky = "w", pady = (8, 0))
 
@@ -409,7 +475,11 @@ class App(tk.Tk):
         def worker():
             try:
                 self.status_var.set("Working (single capture)...")
-                run_once(params)
+                self._capture_in_progress.set()
+                try:
+                    run_once(params)
+                finally:
+                    self._capture_in_progress.clear()
                 self.status_var.set("Done (posted).")
             except Exception as e:
                 self.status_var.set("Error.")
@@ -437,10 +507,21 @@ class App(tk.Tk):
         self._set_running_ui(True)
         self.status_var.set("Loop running...")
 
+        try:
+            self._start_idle_presser_if_enabled()
+        except Exception as e:
+            self._set_running_ui(False)
+            messagebox.showerror("Invalid idle key presser settings", str(e))
+            return
+
         def loop_worker():
             while not self._stop_event.is_set():
                 try:
-                    run_once(params)
+                    self._capture_in_progress.set()
+                    try:
+                        run_once(params)
+                    finally:
+                        self._capture_in_progress.clear()
                     self.after(0, lambda: self.status_var.set("Loop running (last post ok)."))
                 except Exception as e:
                     self.after(0, lambda: self.status_var.set("Loop running (last post error)."))
@@ -449,6 +530,7 @@ class App(tk.Tk):
                 if self._stop_event.wait(timeout = interval_s):
                     break
 
+            self._stop_idle_presser()
             self.after(0, lambda: self._set_running_ui(False))
             self.after(0, lambda: self.status_var.set("Stopped."))
 
@@ -457,8 +539,10 @@ class App(tk.Tk):
 
     def on_stop_loop(self) -> None:
         self._stop_event.set()
+        self._stop_idle_presser()
         self.status_var.set("Stopping...")
 
     def on_close(self) -> None:
         self._stop_event.set()
+        self._stop_idle_presser()
         self.destroy()
