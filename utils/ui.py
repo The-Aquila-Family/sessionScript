@@ -14,19 +14,20 @@ from pathlib import Path
 from utils.capture import CropRect
 from utils.workflow import JobParams, run_once
 from utils.idle_keypress import IdleKeyPresser, IdleKeypressConfig
+from utils.window_picker import list_window_titles, get_active_window_title
 
 
 @dataclass(frozen=True)
 class UiDefaults:
-    crop_w: str = "800"
-    crop_h: str = "450"
+    crop_w: str = "450"
+    crop_h: str = "800"
     crop_x: str = "0"
     crop_y: str = "0"
     delay_s: str = "0.15"
     interval_s: str = "30"
     monitor_index: str = "1"
     key: str = "z"
-    message: str = ""
+    message: str = "Current session list"
 
 
 class App(tk.Tk):
@@ -58,6 +59,14 @@ class App(tk.Tk):
         self.idle_keys_var = tk.StringVar(value = "wasd")
         self.idle_min_var = tk.StringVar(value = "1")
         self.idle_max_var = tk.StringVar(value = "60")
+
+        self.window_select_var = tk.StringVar(value = "")
+        self._window_titles: list[str] = []
+
+        self.bind_window_var = tk.BooleanVar(value = False)
+
+        self.idle_target_title_var = tk.StringVar(value = "")
+        self.idle_force_focus_var = tk.BooleanVar(value = False)
 
         self._capture_in_progress = threading.Event()
         self._idle_presser: IdleKeyPresser | None = None
@@ -148,9 +157,8 @@ class App(tk.Tk):
     def _load_webhooks(self) -> None:
         try:
             if self._webhooks_path.exists():
-                data = json.loads(self._webhooks_path.read_text(encoding="utf-8"))
+                data = json.loads(self._webhooks_path.read_text(encoding = "utf-8"))
                 if isinstance(data, dict) and isinstance(data.get("channels"), dict):
-                    # Ensure all values are strings
                     self._webhooks = {
                         str(k): str(v) for k, v in data["channels"].items()
                         if isinstance(k, str) and isinstance(v, str)
@@ -164,7 +172,7 @@ class App(tk.Tk):
 
     def _save_webhooks(self) -> None:
         payload = {"channels": self._webhooks}
-        self._webhooks_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        self._webhooks_path.write_text(json.dumps(payload, indent = 2), encoding = "utf-8")
 
     def _refresh_channel_dropdown(self) -> None:
         if not hasattr(self, "channel_combo"):
@@ -253,7 +261,18 @@ class App(tk.Tk):
         if max_s < min_s:
             max_s = min_s
 
-        cfg = IdleKeypressConfig(keys = keys, min_seconds = min_s, max_seconds = max_s)
+        if self.bind_window_var.get() and not (self.idle_target_title_var.get() or "").strip():
+            raise ValueError("Bind is enabled but no target application is selected.")
+
+        cfg = IdleKeypressConfig(
+            keys = keys,
+            min_seconds = min_s,
+            max_seconds = max_s,
+            bind_to_target = bool(self.bind_window_var.get()),
+            target_title = (self.idle_target_title_var.get() or "").strip(),
+            force_focus = bool(self.idle_force_focus_var.get()),
+        )
+
         self._idle_presser = IdleKeyPresser(cfg, self._capture_in_progress)
         self._idle_presser.start()
 
@@ -261,6 +280,51 @@ class App(tk.Tk):
         if self._idle_presser:
             self._idle_presser.stop()
             self._idle_presser = None
+
+    def _refresh_window_list(self) -> None:
+        self._window_titles = list_window_titles()
+
+        if hasattr(self, "window_combo"):
+            self.window_combo["values"] = self._window_titles
+
+        if not self._window_titles:
+            self.status_var.set("No windows detected (or titles are empty).")
+
+    def on_refresh_windows(self) -> None:
+        self._refresh_window_list()
+        self.status_var.set("Refreshed window list.")
+
+    def on_use_active_window(self) -> None:
+        title = get_active_window_title()
+        if not title:
+            messagebox.showerror("Error", "Could not detect active window title.")
+            return
+
+        self.window_select_var.set(title)
+        self.idle_target_title_var.set(title)
+        self.status_var.set("Set target to active window.")
+
+    def on_window_selected(self, _event: object = None) -> None:
+        title = (self.window_select_var.get() or "").strip()
+        if not title:
+            return
+
+        self.idle_target_title_var.set(title)
+        self.status_var.set("Selected target window.")
+
+    def _set_window_picker_enabled(self) -> None:
+        enabled = bool(self.bind_window_var.get())
+
+        state = "readonly" if enabled else "disabled"
+        if hasattr(self, "window_combo"):
+            self.window_combo.config(state = state)
+
+        if hasattr(self, "btn_refresh_windows"):
+            self.btn_refresh_windows.config(state = "normal" if enabled else "disabled")
+
+        if hasattr(self, "btn_use_active_window"):
+            self.btn_use_active_window.config(state = "normal" if enabled else "disabled")
+
 
 
     def _build_ui(self) -> None:
@@ -271,7 +335,9 @@ class App(tk.Tk):
         r = 0
 
         channel_row = ttk.Frame(frm)
-        channel_row.grid(row = r + 1, column = 1, sticky = "w", pady = (4, 0))
+        channel_row.grid(row = r, column = 1, sticky = "w", pady = (4, 0))
+
+        r += 1
 
         ttk.Label(channel_row, text = "Channel:").grid(row = 0, column = 0, sticky = "w")
 
@@ -387,6 +453,44 @@ class App(tk.Tk):
         ttk.Entry(idle_row2, textvariable = self.idle_max_var, width = 6).grid(row = 0, column = 5, padx = (6, 0))
 
         r += 1
+
+        ttk.Checkbutton(frm, text = "Bind keypresses to selected application", variable = self.bind_window_var, command = self._set_window_picker_enabled).grid(row = r, column = 1, sticky = "w")
+        r += 1
+
+        ttk.Label(idle_row2, text = "Target title contains:").grid(row = 1, column = 0, sticky = "w", pady = (6, 0))
+        ttk.Entry(idle_row2, textvariable = self.idle_target_title_var, width = 24).grid(row = 1, column = 1, padx = (6, 12), pady = (6, 0))
+
+        ttk.Checkbutton(
+            idle_row2,
+            text = "Force focus",
+            variable = self.idle_force_focus_var
+        ).grid(row = 1, column = 2, columnspan = 2, sticky = "w", pady = (6, 0))
+        r += 1
+
+        ttk.Label(frm, text="Select application:").grid(row = r, column = 0, sticky = "w")
+
+        win_row = ttk.Frame(frm)
+        win_row.grid(row = r, column = 1, sticky="w")
+
+        self.window_combo = ttk.Combobox(
+            win_row,
+            textvariable = self.window_select_var,
+            state = "readonly",
+            width = 52,
+        )
+        self.window_combo.grid(row = 0, column = 0, padx = (0, 8))
+        self.window_combo.bind("<<ComboboxSelected>>", self.on_window_selected)
+
+        self.btn_refresh_windows = ttk.Button(win_row, text = "Refresh", command = self.on_refresh_windows)
+        self.btn_refresh_windows.grid(row = 0, column = 1, padx = (0, 8))
+
+        self.btn_use_active_window = ttk.Button(win_row, text = "Use active", command = self.on_use_active_window)
+        self.btn_use_active_window.grid(row = 0, column = 2)
+
+        r += 1
+
+        self._refresh_window_list()
+        self._set_window_picker_enabled()
 
         btns = ttk.Frame(frm)
         btns.grid(row = r, column = 0, columnspan = 2, sticky = "w", pady = (8, 0))

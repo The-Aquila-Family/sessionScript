@@ -3,9 +3,11 @@ from __future__ import annotations
 import random
 import threading
 import time
-from dataclasses import dataclass
-
 import pyautogui
+
+
+from dataclasses import dataclass
+from utils.window_target import is_window_active, activate_window
 
 @dataclass(frozen = True)
 class IdleKeypressConfig:
@@ -13,6 +15,9 @@ class IdleKeypressConfig:
     min_seconds: int = 1
     max_seconds: int = 60
 
+    bind_to_target: bool = False
+    target_title: str = ""
+    force_focus: bool = False
 
 class IdleKeyPresser:
     def __init__(self, config: IdleKeypressConfig, capture_in_progress_event: threading.Event):
@@ -60,8 +65,22 @@ class IdleKeyPresser:
             if self._capture_event.is_set():
                 continue
 
+            target = (self._config.target_title or "").strip()
+
+            if self._config.bind_to_target and target:
+                if not is_window_active(target):
+                    if self._config.force_focus:
+                        ok = activate_window(target)
+                        if not ok:
+                            continue
+                        if not is_window_active(target):
+                            continue
+                    else:
+                        continue
+
             ch = random.choice(list(keys))
             try:
                 pyautogui.press(ch)
             except Exception:
                 break
+
