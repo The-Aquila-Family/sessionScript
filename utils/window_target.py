@@ -19,7 +19,6 @@ def find_window_by_title_substring(title_substring: str) -> Optional[gw.Win32Win
             return w
     return None
 
-
 def is_window_active(title_substring: str) -> bool:
     needle = (title_substring or "").strip().lower()
     if not needle:
@@ -32,7 +31,6 @@ def is_window_active(title_substring: str) -> bool:
         return needle in (active.title or "").lower()
     except Exception:
         return False
-
 
 def activate_window(title_substring: str) -> bool:
     w = find_window_by_title_substring(title_substring)

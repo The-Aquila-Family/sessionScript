@@ -5,7 +5,6 @@ import threading
 import time
 import pyautogui
 
-
 from dataclasses import dataclass
 from utils.window_target import is_window_active, activate_window
 

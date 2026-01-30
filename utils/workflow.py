@@ -3,7 +3,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from utils.capture import CropRect, press_key, capture_cropped
+from utils.capture import CropRect, key_down, key_up, capture_cropped
 from utils.discord_webhook import discordwebhook, probe_webhook
 
 
@@ -25,9 +25,11 @@ def run_once(params: JobParams) -> None:
 
     probe_webhook(params.webhook_url)
 
-    press_key(params.key)
-    time.sleep(params.delay_s)
-
-    png = capture_cropped(params.monitor_index, params.crop)
+    key_down(params.key)
+    try :
+        time.sleep(params.delay_s)
+        png = capture_cropped(params.monitor_index, params.crop)
+    finally:
+        key_up(params.key)
 
     discordwebhook(webhook_url = params.webhook_url, image_bytes = png, filename = "crop.png", content = params.message)

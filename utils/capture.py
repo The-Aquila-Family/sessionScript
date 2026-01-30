@@ -15,12 +15,11 @@ class CropRect:
     w: int = 800
     h: int = 450
 
+def key_down(key: str) -> None:
+    pyautogui.keyDown(key)
 
-def press_key(key: str) -> None:
-    if not key or not key.strip():
-        raise ValueError("key is required")
-    pyautogui.press(key.strip())
-
+def key_up(key: str) -> None:
+    pyautogui.keyUp(key)
 
 def screenshot_monitor(monitor_index: int = 1) -> Image.Image:
     with mss.mss() as sct:
